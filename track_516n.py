@@ -1,11 +1,15 @@
 import math
 import os
 import time
+import uuid
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
+import duckdb
+
+from prepare_api_logs_duckdb import insert_log, insert_vehicle_position
 
 load_dotenv()
 
@@ -21,18 +25,19 @@ LINE_NUMBER = "516N"
 LINE_TYPE = 10
 DIRECTION = 1  # Terminal Principal -> Terminal Secundário
 
-ORIGIN = (-23.694201, -46.646470)
-DESTINATION = (-23.684193, -46.633013)
+ORIGIN = (-23.693989, -46.646736)
+DESTINATION = (-23.685027, -46.633253)
 
 TRIP_DISTANCE_METERS = 2300
 
-RADIUS_METERS = 40
-POLL_INTERVAL_SECONDS = 10
+RADIUS_METERS = 250
+POLL_INTERVAL_SECONDS = 5
 MAX_POSITION_AGE_SECONDS = 180
 
 TOKEN = os.getenv("SPTRANS_TOKEN")
 
 SAO_PAULO_TZ = ZoneInfo("America/Sao_Paulo")
+DB_PATH = "sptrans.duckdb"
 
 # The selected vehicle is stored in memory, not in a database.
 vehicle_prefix = None
@@ -168,17 +173,60 @@ def find_line_code(session):
 # VEHICLE POSITIONS
 # ============================================================
 
-def get_line_vehicles(session, line_code):
-    data = get_json(
-        session,
-        "Posicao/Linha",
-        params={"codigoLinha": line_code},
-    )
+def get_line_vehicles(session, line_code, conn=None):
+    request_uuid = str(uuid.uuid4())
+    req_start_dt = datetime.now(SAO_PAULO_TZ)
+    start_perf = time.perf_counter()
 
-    return data.get("vs", [])
+    error_type = None
+    http_status_code = None
+    status = "success"
+    vehicles = []
+
+    try:
+        response = session.get(
+            f"{BASE_URL}/Posicao/Linha",
+            params={"codigoLinha": line_code},
+            timeout=20,
+        )
+        http_status_code = response.status_code
+        response.raise_for_status()
+        data = response.json()
+        vehicles = data.get("vs", [])
+    except requests.exceptions.Timeout as exc:
+        status = "timeout"
+        error_type = type(exc).__name__
+    except requests.exceptions.HTTPError as exc:
+        status = "http_error"
+        error_type = type(exc).__name__
+    except requests.exceptions.RequestException as exc:
+        status = "request_error"
+        error_type = type(exc).__name__
+    finally:
+        req_finish_dt = datetime.now(SAO_PAULO_TZ)
+        duration_ms = int((time.perf_counter() - start_perf) * 1000)
+
+        if conn is not None:
+            try:
+                insert_log(
+                    conn,
+                    {
+                        "request_uuid": request_uuid,
+                        "request_started_at": req_start_dt.time(),
+                        "request_finished_at": req_finish_dt.time(),
+                        "request_duration_ms": duration_ms,
+                        "status": status,
+                        "error_type": error_type,
+                        "http_status_code": http_status_code,
+                    },
+                )
+            except Exception as db_err:
+                print(f"[Warning] Falha ao gravar log no DuckDB: {db_err}")
+
+    return vehicles, req_finish_dt, request_uuid
 
 
-def get_fresh_position(vehicle):
+def get_fresh_position(vehicle, line_code=None, request_uuid=None, fetched_at=None):
     lat = vehicle.get("py")
     lon = vehicle.get("px")
 
@@ -192,9 +240,20 @@ def get_fresh_position(vehicle):
         return None
 
     return {
-        "prefix": str(vehicle["p"]),
+        "request_uuid": request_uuid,
+        "fetched_at": fetched_at,
+        "line_code": int(line_code) if line_code is not None else None,
+        "vehicle_prefix": str(vehicle["p"]),
+        "is_accessible": bool(vehicle.get("a", False)),
+        "recorded_at": timestamp,
+        "recorded_at_raw": vehicle.get("ta"),
+        "latitude": float(lat),
+        "longitude": float(lon),
+        # Campos auxiliares para tracking local
         "point": (float(lat), float(lon)),
+        "prefix": str(vehicle["p"]),
         "timestamp": timestamp,
+        "ta": vehicle.get("ta"),
     }
 
 
@@ -211,6 +270,9 @@ def main():
 
     session = requests.Session()
 
+    print(f"Conectando ao banco DuckDB: {DB_PATH}...")
+    conn = duckdb.connect(DB_PATH)
+
     authenticate(session)
     line_code = find_line_code(session)
 
@@ -222,10 +284,17 @@ def main():
 
     # Phase 1: Wait for a bus to enter the origin radius.
     while vehicle_prefix is None:
-        vehicles = get_line_vehicles(session, line_code)
+        vehicles, fetched_at, request_uuid = get_line_vehicles(session, line_code, conn=conn)
+        closest_vehicle = None
+        closest_distance = float("inf")
 
         for vehicle in vehicles:
-            position = get_fresh_position(vehicle)
+            position = get_fresh_position(
+                vehicle,
+                line_code=line_code,
+                request_uuid=request_uuid,
+                fetched_at=fetched_at,
+            )
 
             if position is None:
                 continue
@@ -233,6 +302,10 @@ def main():
             distance = distance_between(
                 position["point"], ORIGIN
             )
+
+            if distance < closest_distance:
+                closest_distance = distance
+                closest_vehicle = position["prefix"]
 
             if distance <= RADIUS_METERS:
                 vehicle_prefix = position["prefix"]
@@ -247,15 +320,20 @@ def main():
                 break
 
         if vehicle_prefix is None:
+            closest_info = (
+                f" Closest: {closest_vehicle} ({closest_distance:.1f} m)"
+                if closest_vehicle
+                else " No fresh vehicles found."
+            )
             print(
                 f"[{format_local(now_utc())}] "
-                "No vehicle detected near origin."
+                f"No vehicle in radius ({RADIUS_METERS} m).{closest_info}"
             )
             time.sleep(POLL_INTERVAL_SECONDS)
 
     # Phase 2: Follow only the selected vehicle.
     while True:
-        vehicles = get_line_vehicles(session, line_code)
+        vehicles, fetched_at, request_uuid = get_line_vehicles(session, line_code, conn=conn)
 
         vehicle = next(
             (
@@ -273,7 +351,30 @@ def main():
             time.sleep(POLL_INTERVAL_SECONDS)
             continue
 
-        position = get_fresh_position(vehicle)
+        # Inserção no layer raw (DuckDB) preservando os campos originais da API SPTrans
+        try:
+            insert_vehicle_position(
+                conn,
+                {
+                    "request_uuid": request_uuid,
+                    "fetched_at": fetched_at,
+                    "cl": line_code,
+                    "p": vehicle.get("p"),
+                    "a": vehicle.get("a"),
+                    "ta": vehicle.get("ta"),
+                    "py": vehicle.get("py"),
+                    "px": vehicle.get("px"),
+                },
+            )
+        except Exception as db_err:
+            print(f"[Warning] Falha ao gravar raw_vehicle_positions no DuckDB: {db_err}")
+
+        position = get_fresh_position(
+            vehicle,
+            line_code=line_code,
+            request_uuid=request_uuid,
+            fetched_at=fetched_at,
+        )
 
         if position is None:
             print("Position is missing or too old. Waiting...")
@@ -282,6 +383,7 @@ def main():
 
         current_point = position["point"]
         current_time = position["timestamp"]
+        current_ta = position.get("ta")
 
         segment_distance = distance_between(
             last_position, current_point
@@ -305,8 +407,14 @@ def main():
             current_time - start_time
         ).total_seconds()
 
+        fetched_str = fetched_at.strftime("%H:%M:%S")
+
         print(
             f"Vehicle {vehicle_prefix} | "
+            f"request_uuid={request_uuid[:8]}... | "
+            f"ta={current_ta} | "
+            # f"hr={api_hr} | "
+            f"fetched_at={fetched_str} | "
             f"position={current_point} | "
             f"destination_distance={distance_to_destination:.1f} m | "
             f"elapsed={elapsed_seconds / 60:.1f} min"
