@@ -32,6 +32,7 @@ TRIP_DISTANCE_METERS = 2300
 
 RADIUS_METERS = 250
 POLL_INTERVAL_SECONDS = 5
+RETRY_INTERVAL_SECONDS = 1
 MAX_POSITION_AGE_SECONDS = 180
 
 TOKEN = os.getenv("SPTRANS_TOKEN")
@@ -193,6 +194,9 @@ def get_line_vehicles(session, line_code, conn=None):
         response.raise_for_status()
         data = response.json()
         vehicles = data.get("vs", [])
+    except requests.exceptions.ConnectionError as exc:
+        status = "connection_error"
+        error_type = type(exc).__name__
     except requests.exceptions.Timeout as exc:
         status = "timeout"
         error_type = type(exc).__name__
@@ -223,7 +227,7 @@ def get_line_vehicles(session, line_code, conn=None):
             except Exception as db_err:
                 print(f"[Warning] Falha ao gravar log no DuckDB: {db_err}")
 
-    return vehicles, req_finish_dt, request_uuid
+    return vehicles, req_finish_dt, request_uuid, status
 
 
 def get_fresh_position(vehicle, line_code=None, request_uuid=None, fetched_at=None):
@@ -284,7 +288,13 @@ def main():
 
     # Phase 1: Wait for a bus to enter the origin radius.
     while vehicle_prefix is None:
-        vehicles, fetched_at, request_uuid = get_line_vehicles(session, line_code, conn=conn)
+        vehicles, fetched_at, request_uuid, req_status = get_line_vehicles(session, line_code, conn=conn)
+
+        if req_status == "connection_error":
+            print(f"ConnectionError occurred. Retrying in {RETRY_INTERVAL_SECONDS}s...")
+            time.sleep(RETRY_INTERVAL_SECONDS)
+            continue
+
         closest_vehicle = None
         closest_distance = float("inf")
 
@@ -333,7 +343,12 @@ def main():
 
     # Phase 2: Follow only the selected vehicle.
     while True:
-        vehicles, fetched_at, request_uuid = get_line_vehicles(session, line_code, conn=conn)
+        vehicles, fetched_at, request_uuid, req_status = get_line_vehicles(session, line_code, conn=conn)
+
+        if req_status == "connection_error":
+            print(f"ConnectionError occurred while tracking. Retrying in {RETRY_INTERVAL_SECONDS}s...")
+            time.sleep(RETRY_INTERVAL_SECONDS)
+            continue
 
         vehicle = next(
             (
