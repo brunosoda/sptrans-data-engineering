@@ -212,8 +212,8 @@ def get_line_vehicles(session, line_code, conn=None):
                     conn,
                     {
                         "request_uuid": request_uuid,
-                        "request_started_at": req_start_dt.time(),
-                        "request_finished_at": req_finish_dt.time(),
+                        "request_started_at": req_start_dt,
+                        "request_finished_at": req_finish_dt,
                         "request_duration_ms": duration_ms,
                         "status": status,
                         "error_type": error_type,

@@ -1,41 +1,33 @@
 """
 Módulo para preparação e inserção de dados no DuckDB:
-1. Logs de requisição HTTP (api_request_logs)
-2. Posições de veículos observadas (raw_vehicle_positions)
+1. Logs de requisição HTTP (raw.api_request_logs)
+2. Posições de veículos observadas (raw.raw_vehicle_positions)
 """
 
 import uuid
-from datetime import datetime, time as dt_time
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 import duckdb
 
 
-def _parse_time(value: Union[str, dt_time, datetime, None]) -> Optional[dt_time]:
+def _parse_datetime(value: Union[str, datetime, None]) -> Optional[datetime]:
     """
-    Normaliza o valor para um objeto datetime.time compatível com o tipo TIME do DuckDB.
-    Suporta strings como '12:44:54', '12:44:54.123', datetime ou dt_time.
+    Normaliza o valor para um objeto datetime compatível com TIMESTAMPTZ do DuckDB.
     """
     if value is None:
         return None
-    if isinstance(value, dt_time):
-        return value
     if isinstance(value, datetime):
-        return value.time()
+        return value
     if isinstance(value, str):
         val_clean = value.strip()
         if not val_clean or val_clean.upper() == "NULL":
             return None
-        for fmt in ("%H:%M:%S", "%H:%M:%S.%f"):
-            try:
-                return datetime.strptime(val_clean, fmt).time()
-            except ValueError:
-                pass
         try:
-            return dt_time.fromisoformat(val_clean)
+            return datetime.fromisoformat(val_clean)
         except ValueError:
-            raise ValueError(f"Formato de hora inválido: {value}")
+            raise ValueError(f"Formato de datetime inválido: {value}")
 
-    raise TypeError(f"Tipo não suportado para request time: {type(value)}")
+    raise TypeError(f"Tipo não suportado para datetime: {type(value)}")
 
 
 def _parse_uuid(value: Any) -> Optional[str]:
@@ -50,13 +42,13 @@ def _parse_uuid(value: Any) -> Optional[str]:
 
 def prepare_log_record(raw: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Prepara e tipifica um dicionário de log bruto para inserção na api_request_logs.
+    Prepara e tipifica um dicionário de log bruto para inserção na raw.api_request_logs.
     """
     req_uuid_raw = raw.get("request_uuid") or raw.get("request_id")
     request_uuid_val = _parse_uuid(req_uuid_raw)
 
-    started_at = _parse_time(raw.get("request_started_at"))
-    finished_at = _parse_time(raw.get("request_finished_at"))
+    started_at = _parse_datetime(raw.get("request_started_at"))
+    finished_at = _parse_datetime(raw.get("request_finished_at"))
 
     duration_val = raw.get("request_duration_ms")
     if duration_val is not None and str(duration_val).strip().upper() != "NULL":
@@ -88,10 +80,10 @@ def prepare_log_record(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def insert_log(con: duckdb.DuckDBPyConnection, log_record: Dict[str, Any]) -> None:
-    """Insere um registro único na tabela api_request_logs."""
+    """Insere um registro único na tabela raw.api_request_logs."""
     item = prepare_log_record(log_record)
     query = """
-    INSERT INTO api_request_logs (
+    INSERT INTO raw.api_request_logs (
         request_uuid,
         request_started_at,
         request_finished_at,
@@ -116,13 +108,13 @@ def insert_log(con: duckdb.DuckDBPyConnection, log_record: Dict[str, Any]) -> No
 
 
 def insert_logs(con: duckdb.DuckDBPyConnection, logs: List[Dict[str, Any]]) -> None:
-    """Prepara uma lista de logs brutos e insere na tabela api_request_logs."""
+    """Prepara uma lista de logs brutos e insere na tabela raw.api_request_logs."""
     prepared = [prepare_log_record(log) for log in logs]
     if not prepared:
         return
 
     query = """
-    INSERT INTO api_request_logs (
+    INSERT INTO raw.api_request_logs (
         request_uuid,
         request_started_at,
         request_finished_at,
@@ -149,7 +141,7 @@ def insert_logs(con: duckdb.DuckDBPyConnection, logs: List[Dict[str, Any]]) -> N
 
 def prepare_vehicle_position(raw: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Prepara um registro de posição de veículo para a tabela raw_vehicle_positions.
+    Prepara um registro de posição de veículo para a tabela raw.raw_vehicle_positions.
     Preserva os nomes de coluna originais da API SPTrans (p, a, ta, py, px).
     """
     req_uuid_raw = raw.get("request_uuid") or raw.get("request_id")
@@ -193,10 +185,10 @@ def prepare_vehicle_position(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def insert_vehicle_position(con: duckdb.DuckDBPyConnection, raw_pos: Dict[str, Any]) -> None:
-    """Insere um registro de veículo na tabela raw_vehicle_positions."""
+    """Insere um registro de veículo na tabela raw.raw_vehicle_positions."""
     item = prepare_vehicle_position(raw_pos)
     query = """
-    INSERT INTO raw_vehicle_positions (
+    INSERT INTO raw.raw_vehicle_positions (
         request_uuid,
         fetched_at,
         cl,
