@@ -35,8 +35,6 @@ POLL_INTERVAL_SECONDS = 5
 RETRY_INTERVAL_SECONDS = 1
 MAX_POSITION_AGE_SECONDS = 180
 
-TOKEN = os.getenv("SPTRANS_TOKEN")
-
 SAO_PAULO_TZ = ZoneInfo("America/Sao_Paulo")
 DB_PATH = "sptrans.duckdb"
 
@@ -188,17 +186,23 @@ def get_line_vehicles(session, line_code, conn=None):
         response = session.get(
             f"{BASE_URL}/Posicao/Linha",
             params={"codigoLinha": line_code},
-            timeout=20,
+            timeout=(3.05, 5),
         )
         http_status_code = response.status_code
         response.raise_for_status()
         data = response.json()
         vehicles = data.get("vs", [])
-    except requests.exceptions.ConnectionError as exc:
-        status = "connection_error"
-        error_type = type(exc).__name__
+    except requests.exceptions.ConnectTimeout as exc:
+        status = "timeout"
+        error_type = "ConnectTimeout"
+    except requests.exceptions.ReadTimeout as exc:
+        status = "timeout"
+        error_type = "ReadTimeout"
     except requests.exceptions.Timeout as exc:
         status = "timeout"
+        error_type = type(exc).__name__
+    except requests.exceptions.ConnectionError as exc:
+        status = "connection_error"
         error_type = type(exc).__name__
     except requests.exceptions.HTTPError as exc:
         status = "http_error"
@@ -227,7 +231,7 @@ def get_line_vehicles(session, line_code, conn=None):
             except Exception as db_err:
                 print(f"[Warning] Falha ao gravar log no DuckDB: {db_err}")
 
-    return vehicles, req_finish_dt, request_uuid, status
+    return vehicles, req_finish_dt, request_uuid, status, error_type
 
 
 def get_fresh_position(vehicle, line_code=None, request_uuid=None, fetched_at=None):
@@ -288,10 +292,15 @@ def main():
 
     # Phase 1: Wait for a bus to enter the origin radius.
     while vehicle_prefix is None:
-        vehicles, fetched_at, request_uuid, req_status = get_line_vehicles(session, line_code, conn=conn)
+        vehicles, fetched_at, request_uuid, req_status, req_err = get_line_vehicles(session, line_code, conn=conn)
 
-        if req_status == "connection_error":
-            print(f"ConnectionError occurred. Retrying in {RETRY_INTERVAL_SECONDS}s...")
+        if req_status != "success":
+            if req_status == "timeout":
+                print(f"[{format_local(now_utc())}] Timeout ({req_err}). Retrying in {RETRY_INTERVAL_SECONDS}s...")
+            elif req_status == "connection_error":
+                print(f"[{format_local(now_utc())}] ConnectionError. Retrying in {RETRY_INTERVAL_SECONDS}s...")
+            else:
+                print(f"[{format_local(now_utc())}] Erro {req_status} ({req_err}). Retrying in {RETRY_INTERVAL_SECONDS}s...")
             time.sleep(RETRY_INTERVAL_SECONDS)
             continue
 
@@ -343,10 +352,15 @@ def main():
 
     # Phase 2: Follow only the selected vehicle.
     while True:
-        vehicles, fetched_at, request_uuid, req_status = get_line_vehicles(session, line_code, conn=conn)
+        vehicles, fetched_at, request_uuid, req_status, req_err = get_line_vehicles(session, line_code, conn=conn)
 
-        if req_status == "connection_error":
-            print(f"ConnectionError occurred while tracking. Retrying in {RETRY_INTERVAL_SECONDS}s...")
+        if req_status != "success":
+            if req_status == "timeout":
+                print(f"[{format_local(now_utc())}] Timeout ({req_err}) durante rastreamento do veículo {vehicle_prefix}. Tentando novamente em {RETRY_INTERVAL_SECONDS}s...")
+            elif req_status == "connection_error":
+                print(f"[{format_local(now_utc())}] ConnectionError ({req_err}) durante rastreamento. Retrying in {RETRY_INTERVAL_SECONDS}s...")
+            else:
+                print(f"[{format_local(now_utc())}] Erro {req_status} ({req_err}) durante rastreamento. Retrying in {RETRY_INTERVAL_SECONDS}s...")
             time.sleep(RETRY_INTERVAL_SECONDS)
             continue
 
@@ -363,7 +377,7 @@ def main():
                 f"Vehicle {vehicle_prefix} is not currently "
                 "visible in the API. Waiting..."
             )
-            time.sleep(POLL_INTERVAL_SECONDS)
+            time.sleep(RETRY_INTERVAL_SECONDS)
             continue
 
         # Inserção no layer raw (DuckDB) preservando os campos originais da API SPTrans
