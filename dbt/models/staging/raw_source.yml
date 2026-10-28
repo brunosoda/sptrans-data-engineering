@@ -1,0 +1,40 @@
+version: 2
+
+sources:
+  - name: raw
+    database: sptrans
+    schema: raw
+    tables:
+      - name: raw_vehicle_positions
+        columns:
+          - name: request_uuid
+            tests:
+              - unique
+              - not_null
+          - name: fetched_at
+            tests:
+              - not_null
+          - name: cl
+            tests:
+              - not_null  
+          - name: p
+            tests:
+              - not_null
+          - name: a
+            tests:
+              - not_null
+          - name: ta
+            tests:
+              - not_null
+          - name: py
+            tests:
+              - not_null
+          - name: px
+            tests:
+              - not_null
+          - name: loaded_at
+            tests:
+              - not_null
+          - name: trip_id
+            tests:
+              - not_null

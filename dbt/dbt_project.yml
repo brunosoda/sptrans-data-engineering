@@ -18,6 +18,13 @@ clean-targets:
 models:
   sptrans_analytics:
     staging:
+      +schema: staging
       +materialized: view
+
+    intermediate:
+      +schema: intermediate
+      +materialized: view
+
     marts:
+      +schema: analytics
       +materialized: table
