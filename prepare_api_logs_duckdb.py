@@ -172,6 +172,12 @@ def prepare_vehicle_position(raw: Dict[str, Any]) -> Dict[str, Any]:
     px = raw.get("px")
     px = float(px) if px is not None else None
 
+    trip_id_val = raw.get("trip_id")
+    if trip_id_val is not None and str(trip_id_val).strip().upper() != "NULL":
+        trip_id = int(trip_id_val)
+    else:
+        trip_id = None
+
     return {
         "request_uuid": request_uuid_val,
         "fetched_at": fetched_at,
@@ -181,6 +187,7 @@ def prepare_vehicle_position(raw: Dict[str, Any]) -> Dict[str, Any]:
         "ta": ta,
         "py": py,
         "px": px,
+        "trip_id": trip_id,
     }
 
 
@@ -196,8 +203,9 @@ def insert_vehicle_position(con: duckdb.DuckDBPyConnection, raw_pos: Dict[str, A
         a,
         ta,
         py,
-        px
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        px,
+        trip_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
     con.execute(
         query,
@@ -210,5 +218,6 @@ def insert_vehicle_position(con: duckdb.DuckDBPyConnection, raw_pos: Dict[str, A
             item["ta"],
             item["py"],
             item["px"],
+            item["trip_id"],
         ],
     )

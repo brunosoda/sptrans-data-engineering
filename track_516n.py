@@ -40,6 +40,7 @@ DB_PATH = "sptrans.duckdb"
 
 # The selected vehicle is stored in memory, not in a database.
 vehicle_prefix = None
+trip_id = None
 start_time = None
 last_position = None
 last_position_time = None
@@ -271,6 +272,7 @@ def get_fresh_position(vehicle, line_code=None, request_uuid=None, fetched_at=No
 
 def main():
     global vehicle_prefix
+    global trip_id
     global start_time
     global last_position
     global last_position_time
@@ -332,7 +334,14 @@ def main():
                 last_position = position["point"]
                 last_position_time = start_time
 
+                # Definir próximo trip_id único consultando o banco
+                max_trip_result = conn.execute(
+                    "SELECT COALESCE(MAX(trip_id), 0) FROM raw.raw_vehicle_positions"
+                ).fetchone()
+                trip_id = (max_trip_result[0] if max_trip_result else 0) + 1
+
                 print("\nTRIP STARTED")
+                print(f"Trip ID: {trip_id}")
                 print(f"Vehicle prefix: {vehicle_prefix}")
                 print(f"Start time: {format_local(start_time)}")
                 print(f"Distance from origin: {distance:.1f} m")
@@ -380,7 +389,7 @@ def main():
             time.sleep(RETRY_INTERVAL_SECONDS)
             continue
 
-        # Inserção no layer raw (DuckDB) preservando os campos originais da API SPTrans
+        # Inserção no layer raw (DuckDB) preservando os campos originais da API SPTrans e o trip_id
         try:
             insert_vehicle_position(
                 conn,
@@ -393,6 +402,7 @@ def main():
                     "ta": vehicle.get("ta"),
                     "py": vehicle.get("py"),
                     "px": vehicle.get("px"),
+                    "trip_id": trip_id,
                 },
             )
         except Exception as db_err:
