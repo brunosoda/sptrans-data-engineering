@@ -34,6 +34,8 @@ RADIUS_METERS = 250
 POLL_INTERVAL_SECONDS = 5
 RETRY_INTERVAL_SECONDS = 1
 MAX_POSITION_AGE_SECONDS = 180
+MAX_NO_DATA_SECONDS = 600  # 10 minutos sem retorno real antes de encerrar
+
 
 SAO_PAULO_TZ = ZoneInfo("America/Sao_Paulo")
 DB_PATH = "sptrans.duckdb"
@@ -360,7 +362,16 @@ def main():
             time.sleep(POLL_INTERVAL_SECONDS)
 
     # Phase 2: Follow only the selected vehicle.
+    last_seen_time = time.time()
     while True:
+        if (time.time() - last_seen_time) >= MAX_NO_DATA_SECONDS:
+            print(
+                f"\n[{format_local(now_utc())}] "
+                f"Veículo {vehicle_prefix} sem retorno real ou com posições desatualizadas "
+                f"por mais de {MAX_NO_DATA_SECONDS // 60} minutos. Encerrando rastreamento."
+            )
+            break
+
         vehicles, fetched_at, request_uuid, req_status, req_err = get_line_vehicles(session, line_code, conn=conn)
 
         if req_status != "success":
@@ -419,6 +430,9 @@ def main():
             print("Position is missing or too old. Waiting...")
             time.sleep(POLL_INTERVAL_SECONDS)
             continue
+
+        # Posição válida e recente encontrada: reseta o temporizador de inatividade
+        last_seen_time = time.time()
 
         current_point = position["point"]
         current_time = position["timestamp"]
