@@ -38,3 +38,24 @@ sources:
           - name: trip_id
             tests:
               - not_null
+      - name: api_request_logs
+        columns:
+          - name: request_uuid
+            tests:
+              - unique
+              - not_null
+          - name: request_started_at
+            tests:
+              - not_null
+          - name: request_finished_at
+            tests:
+              - not_null  
+          - name: request_duration_ms
+            tests:
+              - not_null
+          - name: status
+            tests:
+              - not_null
+          - name: loaded_at
+            tests:
+              - not_null
